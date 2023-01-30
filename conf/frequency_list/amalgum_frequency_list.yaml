@@ -1,0 +1,43 @@
+orig_work_dir: ${hydra:runtime.cwd}
+wsd_framework_dir: data/WSD_Evaluation_Framework
+
+# sense inventory
+sense_inventory:
+  _target_: src.sense_inventories.WordNetSenseInventory
+  wn_candidates_path: ${wsd_framework_dir}/Data_Validation/candidatesWN30.txt
+
+# model & prediction params
+model:
+  model_checkpoint: null
+  device: 0
+  prediction_params:
+    text_encoding_strategy: "relative-positions"
+    token_batch_size: 4096
+    progress_bar: True
+
+# generate frequency list
+
+amalgum_path: null
+
+samples_generator:
+  _target_: src.consec_dataset.build_samples_generator_from_disambiguation_corpus
+  disambiguation_corpus:
+    _target_: src.disambiguation_corpora.AmalgumCorpus
+    amalgum_path: ${amalgum_path}
+    sense_inventory: ${sense_inventory}
+    materialize: True
+  sense_inventory: ${sense_inventory}
+  sentence_window: 2  # one prev one next
+  randomize_sentence_window: False
+  remove_multilabel_instances: False
+  shuffle_definitions: False
+  randomize_dependencies: False
+
+# predictor
+predictor:
+  _target_: src.scripts.model.continuous_predict.GreedyDepPredictor
+  dependency_finder:
+    # slightly worse performance than PPMIPolysemyDependencyFinder but much less memory intensive
+    _target_: src.dependency_finder.PolysemyDependencyFinder
+    max_dependencies: 9
+    sense_inventory: ${sense_inventory}

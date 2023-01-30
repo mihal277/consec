@@ -9,8 +9,7 @@ import collections
 import numpy as np
 import torch
 
-from src.utils.wsd import read_from_raganato, expand_raganato_path, pos_map
-
+from src.utils.wsd import read_from_raganato, expand_raganato_path, pos_map, read_from_amalgum
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +156,82 @@ class WordNetCorpus(DisambiguationCorpus):
 
         prev_sentences = [self.sentences_index[sent_id] for sent_id in prev_sentences_id]
         next_sentences = [self.sentences_index[sent_id] for sent_id in next_sentences_id]
+
+        return prev_sentences, next_sentences
+
+    def __len__(self) -> int:
+        if self.dataset_store is None:
+            self.materialize_dataset()
+        return len(self.dataset_store)
+
+
+class AmalgumCorpus(DisambiguationCorpus):
+    def __init__(
+        self, amalgum_path: str, sense_inventory: "SenseInventory", materialize: bool
+    ):
+        super().__init__()
+        self.amalgum_path = amalgum_path
+        self.dataset_store = None
+        self.sense_inventory = sense_inventory
+
+        self.dataset_store = None
+        self.disambiguation_sentences = None
+        if materialize:
+            self.materialize_dataset()
+
+    def materialize_dataset(self) -> None:
+        self.logger.info("Materializing amalgum dataset")
+        self.dataset_store = list(read_from_amalgum(self.amalgum_path, self.sense_inventory))
+        self.disambiguation_sentences = list(self)
+
+    def __iter__(self) -> Iterator[List[DisambiguationInstance]]:
+
+        amalgum_iterator = (
+            self.dataset_store
+            if self.dataset_store is not None
+            else read_from_amalgum(self.amalgum_path, self.sense_inventory)
+        )
+        for document_id, sentence_id, wsd_sentence in amalgum_iterator:
+
+            disambiguation_instances = [
+                DisambiguationInstance(
+                    document_id,
+                    sentence_id,
+                    wi.instance_id,
+                    wi.annotated_token.text,
+                    pos_map.get(wi.annotated_token.pos, wi.annotated_token.pos),
+                    wi.annotated_token.lemma,
+                    wi.labels if wi.labels is None or len(wi.labels) > 0 else None,
+                )
+                for wi in wsd_sentence
+            ]
+
+            if re.fullmatch(rf"[{string.punctuation}]*", disambiguation_instances[-1].text) is None:
+                disambiguation_instances.append(
+                    DisambiguationInstance(
+                        document_id, sentence_id, None, ".", pos_map.get("PUNCT", "PUNCT"), ".", None
+                    )
+                )
+                logger.debug(
+                    f'Found sentence with missing trailing punctuation, adding it: {" ".join([di.text for di in disambiguation_instances])}'
+                )
+            yield disambiguation_instances
+
+    def get_neighbours_sentences(
+        self,
+        document_id: str,
+        sentence_id: str,
+        prev_sent_num: int,
+        next_sent_num: int,
+    ) -> Tuple[List[List[DisambiguationInstance]], List[List[DisambiguationInstance]]]:
+        assert self.disambiguation_sentences is not None
+
+        this_sentence_num = int(sentence_id.split("-")[-1])
+        prev_sentence_ids = list(range(max(this_sentence_num - prev_sent_num, 0), this_sentence_num))
+        next_sentence_ids = list(
+            range(min(len(self), this_sentence_num + 1), min(len(self), this_sentence_num + 1 + next_sent_num)))
+        prev_sentences = [self.disambiguation_sentences[i] for i in prev_sentence_ids]
+        next_sentences = [self.disambiguation_sentences[i] for i in next_sentence_ids]
 
         return prev_sentences, next_sentences
 

@@ -1,7 +1,9 @@
+from pathlib import Path
+
+from conllu import parse_incr
 import tempfile
 import xml.etree.cElementTree as ET
 from typing import NamedTuple, Optional, List, Callable, Tuple, Iterable
-from xml.dom import minidom
 
 from src.utils.commons import execute_bash_command
 
@@ -188,3 +190,94 @@ class RaganatoBuilder:
             for gold_sense in self.gold_senses:
                 f_labels.write(" ".join(gold_sense))
                 f_labels.write("\n")
+
+
+def get_amalgum_lemma(conllu_token: dict, verb2compound_particle: dict, sense_intentory: "SenseInventory", sentence) -> Optional[str]:
+    # particles in phrasal verbs like shut down should be omitted
+    # if the words are next to each other
+    if (
+            conllu_token["deprel"] == "compound:prt" and
+            conllu_token["id"] == conllu_token["head"] + 1
+    ):
+        phrasal_verb_lemma = f"{sentence[conllu_token['head']-1]['lemma']}_{conllu_token['lemma']}"
+        if sense_intentory.get_possible_senses(phrasal_verb_lemma,  "v"):
+            return None
+        return conllu_token["lemma"]
+
+    conllu_token_id = conllu_token["id"]
+    compound_particle_token_id = verb2compound_particle.get(conllu_token_id)
+    pos = conllu_token["upos"]
+    if compound_particle_token_id is not None:
+        compound_particle_lemma = sentence[compound_particle_token_id-1]["lemma"]
+        lemma = f"{conllu_token['lemma']}_{compound_particle_lemma}"
+        return lemma
+
+    lemma = conllu_token["lemma"]
+    postprocessed_lemma = conllu_token["lemma"].replace("-", "_")
+    if sense_intentory.get_possible_senses(lemma, pos_map.get(pos, pos)):
+        return lemma
+    if sense_intentory.get_possible_senses(postprocessed_lemma, pos_map.get(pos, pos)):
+        return postprocessed_lemma
+    return lemma
+
+
+def get_verb2compound_particle(sentence) -> dict:
+    verb2compound_particle = {}
+    ignored_heads = []
+    for token in reversed(sentence):
+        if token["deprel"] == "compound:prt":
+            head_verb_token_id = token["head"]
+            if head_verb_token_id in ignored_heads:
+                assert head_verb_token_id not in verb2compound_particle
+                continue
+            if head_verb_token_id in verb2compound_particle:
+                # ignore verbs with two or more particles
+                del verb2compound_particle[head_verb_token_id]
+                ignored_heads.append(head_verb_token_id)
+                continue
+            verb2compound_particle[head_verb_token_id] = token["id"]
+    return verb2compound_particle
+
+def _read_from_amalgum_document(
+    document_path: Path, sense_intentory: "SenseInventory"
+) -> Iterable[Tuple[str, str, List[WSDInstance]]]:
+    document_id = document_path.stem
+    with document_path.open("r", encoding="utf-8") as f:
+        for sentence in parse_incr(f):
+            verb2compound_particle = get_verb2compound_particle(sentence)
+            wsd_instances = []
+            sentence_id = sentence.metadata["sent_id"]
+            for token in sentence:
+                token_id = token["id"]
+                lemma = get_amalgum_lemma(token, verb2compound_particle, sense_intentory, sentence)
+                if lemma is None:
+                    continue
+                pos = token["upos"]
+                annotated_token = AnnotatedToken(
+                    idx=token_id,
+                    text=token["form"],
+                    pos=pos,
+                    lemma=lemma,
+                )
+                instance_id = f"{document_id}__{sentence_id}__{token_id}"
+                wsd_instance = WSDInstance(
+                    annotated_token=annotated_token,
+                    labels=None,
+                    instance_id=instance_id if sense_intentory.get_possible_senses(lemma,
+                                                                                   pos_map.get(pos, pos)) else None,
+                )
+                wsd_instances.append(wsd_instance)
+            yield document_id, sentence_id, wsd_instances
+
+
+def read_from_amalgum(
+    amalgum_path: str,
+    sense_intentory: "SenseInventory"
+) -> Iterable[Tuple[str, str, List[WSDInstance]]]:
+    if Path(amalgum_path).suffix == ".conllu":
+        document_path = Path(amalgum_path)
+        yield from _read_from_amalgum_document(document_path, sense_intentory)
+    else:
+        for genre_path in Path(amalgum_path).iterdir():
+            for document_path in (genre_path / "dep").iterdir():
+                yield from _read_from_amalgum_document(document_path, sense_intentory)

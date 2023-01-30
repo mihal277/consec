@@ -107,6 +107,11 @@ Enter context lemma-def-position tuples. " --- " separated. Position should be t
 ```
 The scores assigned to each prediction are their probabilities.
 
+## Amalgum senses frequency list
+Create a frequency list for each `.conllu` file in directory `data/amalgum_0.2`
+```bash
+DIRECTORY="data/amalgum_0.2" PYTHONPATH=$(pwd) ./amalgum_gpu_runner.sh
+```
 
 # Acknowledgments
 

@@ -6,3 +6,5 @@ comet-ml==3.10.0
 # other
 networkx==2.5
 black==20.8b1
+conllu==4.5.2
+tqdm==4.64.1
